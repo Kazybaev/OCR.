@@ -61,6 +61,7 @@ def load_paddle():
         use_gpu=False,
         show_log=False
     )
+    # table_engine = PPStructure(...) — создаётся детектор таблиц/макета
     table_engine = PPStructure(
         lang='en',
         layout=True,
@@ -156,13 +157,13 @@ if uploaded_file:
                         if t:
                             raw_texts.append(("EasyOCR", t))
 
-                # ============================================================
                 # =============== ГИБРИДНЫЕ ТАБЛИЦЫ ===========================
-                # ============================================================
                 if table_engine:
+                    # table_result = table_engine(img_path) — обрабатывает изображение
                     table_result = table_engine(img_path)
 
                     for region in table_result:
+                        # if region.get("type") != "table": continue — берутся только таблицы
                         if region.get("type") != "table":
                             continue
 
