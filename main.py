@@ -1,5 +1,5 @@
-# main.py — OCR с посимвольным сравнением и подсветкой различий
-# PaddleOCR + Tesseract + EasyOCR (EN + RU + ZH)
+# main.py — OCR с объединёнными движками и посимвольным сравнением
+# PaddleOCR (EN+CH) + Tesseract + EasyOCR (RU+CH) - 3 финальных результата
 
 import streamlit as st
 import os
@@ -35,9 +35,9 @@ except Exception as e:
     st.error(f"❌ PaddleOCR ошибка: {e}")
 
 # ========= UI =========
-st.set_page_config(page_title="OCR Comparator", layout="wide")
-st.title("📸 OCR Сравнение с подсветкой различий")
-st.caption("Посимвольное сравнение результатов разных движков")
+st.set_page_config(page_title="OCR Comparator Pro", layout="wide")
+st.title("📸 OCR Сравнение: 3 движка")
+st.caption("PaddleOCR | Tesseract | EasyOCR - посимвольное сравнение с подсветкой")
 
 # ========= Проверки =========
 TESSERACT_OK = True
@@ -113,64 +113,100 @@ def preprocess_image(img: np.ndarray, scale: float = 2.0) -> np.ndarray:
     return denoised
 
 
+def normalize_text(s: str) -> str:
+    """Нормализация текста"""
+    return re.sub(r'\s+', ' ', s).strip()
+
+
+def merge_texts_smart(texts: List[str]) -> str:
+    """Умное объединение текстов с дедупликацией"""
+    if not texts:
+        return ""
+
+    # Удаляем дубликаты с сохранением порядка
+    seen = set()
+    unique_lines = []
+
+    for text in texts:
+        lines = text.split('\n')
+        for line in lines:
+            line_norm = normalize_text(line)
+            if line_norm and line_norm not in seen:
+                seen.add(line_norm)
+                unique_lines.append(line.strip())
+
+    return "\n".join(unique_lines)
+
+
 def align_and_highlight_differences(texts_dict: Dict[str, str]) -> str:
     """
-    Выравнивание текстов и подсветка различий цветом
-    texts_dict: {"Engine Name": "recognized text"}
+    Посимвольное сравнение 3 движков с горизонтальным расположением
     """
-    if not texts_dict:
-        return ""
+    if not texts_dict or len(texts_dict) < 2:
+        return "<div>Недостаточно данных для сравнения</div>"
 
     # Цвета для каждого движка
     colors = {
-        'PaddleOCR-EN': '#4A90E2',  # Синий
-        'PaddleOCR-CH': '#7B68EE',  # Фиолетовый
+        'PaddleOCR': '#4A90E2',  # Синий
         'Tesseract': '#50C878',  # Зелёный
-        'EasyOCR-RU': '#FF6B6B',  # Красный
-        'EasyOCR-CH': '#FFA07A'  # Оранжевый
+        'EasyOCR': '#FF6B6B'  # Красный
     }
 
     engines = list(texts_dict.keys())
     texts = list(texts_dict.values())
 
-    if len(texts) < 2:
-        return f"<div style='font-family:monospace; white-space:pre-wrap;'>{texts[0]}</div>"
-
-    # Берём первый текст как эталон
+    # Берём первый как эталон
     reference = texts[0]
+    reference_engine = engines[0]
 
-    html_output = "<div style='font-family:monospace; line-height:1.8;'>"
+    # Контейнер с горизонтальным расположением
+    html_output = "<div style='display:flex; gap:15px; background:#1a1a1a; padding:20px; border-radius:8px; overflow-x:auto;'>"
 
-    for idx, (engine, text) in enumerate(zip(engines, texts)):
+    # Эталонный текст (первая колонка)
+    color = colors.get(reference_engine, '#888888')
+    html_output += f"<div style='flex:1; min-width:300px; border:2px solid {color}; border-radius:8px; padding:15px; background:#0d0d0d;'>"
+    html_output += f"<div style='text-align:center; margin-bottom:10px;'>"
+    html_output += f"<strong style='color:{color}; font-size:16px;'>🔹 {reference_engine}</strong>"
+    html_output += f"<div style='color:#888; font-size:11px; margin-top:3px;'>ЭТАЛОН</div>"
+    html_output += f"</div>"
+    html_output += f"<div style='background:#2d2d2d; padding:12px; border-radius:5px; font-family:monospace; line-height:1.8; white-space:pre-wrap; color:#ccc; max-height:600px; overflow-y:auto;'>{reference}</div>"
+    html_output += "</div>"
+
+    # Сравнение остальных с эталоном (следующие колонки)
+    for idx in range(1, len(engines)):
+        engine = engines[idx]
+        text = texts[idx]
         color = colors.get(engine, '#888888')
 
-        html_output += f"<div style='margin-bottom:15px;'>"
-        html_output += f"<strong style='color:{color};'>🔹 {engine}</strong><br/>"
+        html_output += f"<div style='flex:1; min-width:300px; border:2px solid {color}; border-radius:8px; padding:15px; background:#0d0d0d;'>"
+        html_output += f"<div style='text-align:center; margin-bottom:10px;'>"
+        html_output += f"<strong style='color:{color}; font-size:16px;'>🔹 {engine}</strong>"
+        html_output += f"<div style='color:#888; font-size:11px; margin-top:3px;'>СРАВНЕНИЕ</div>"
+        html_output += f"</div>"
 
-        if idx == 0:
-            # Эталонный текст без подсветки
-            html_output += f"<span style='background:#2d2d2d; padding:5px; display:inline-block; border-radius:3px;'>{text}</span>"
-        else:
-            # Сравнение с эталоном
-            matcher = SequenceMatcher(None, reference, text)
-            highlighted = ""
+        # Посимвольное сравнение
+        matcher = SequenceMatcher(None, reference, text)
+        highlighted = ""
 
-            for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-                if tag == 'equal':
-                    # Совпадающие символы - серый фон
-                    highlighted += f"<span style='background:#2d2d2d; padding:2px;'>{text[j1:j2]}</span>"
-                elif tag == 'replace':
-                    # Замена - яркая подсветка
-                    highlighted += f"<span style='background:{color}; color:#000; padding:2px; font-weight:bold;'>{text[j1:j2]}</span>"
-                elif tag == 'insert':
-                    # Вставка - яркая подсветка
-                    highlighted += f"<span style='background:{color}; color:#000; padding:2px; font-weight:bold;'>{text[j1:j2]}</span>"
-                elif tag == 'delete':
-                    # Удаление - показываем что отсутствует
-                    highlighted += f"<span style='background:#555; color:#aaa; padding:2px; text-decoration:line-through;'>{reference[i1:i2]}</span>"
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == 'equal':
+                # Совпадения - тёмный фон
+                chunk = text[j1:j2].replace('\n', '<br/>')
+                highlighted += f"<span style='color:#ccc;'>{chunk}</span>"
+            elif tag == 'replace':
+                # Замены - яркая подсветка
+                chunk = text[j1:j2].replace('\n', '<br/>')
+                highlighted += f"<span style='background:{color}; color:#000; font-weight:bold; padding:2px 4px; border-radius:3px;'>{chunk}</span>"
+            elif tag == 'insert':
+                # Вставки - яркая подсветка
+                chunk = text[j1:j2].replace('\n', '<br/>')
+                highlighted += f"<span style='background:{color}; color:#000; font-weight:bold; padding:2px 4px; border-radius:3px;'>{chunk}</span>"
+            elif tag == 'delete':
+                # Удаления - зачёркнутый текст (показываем что пропущено)
+                chunk = reference[i1:i2].replace('\n', '<br/>')
+                highlighted += f"<span style='background:#555; color:#999; text-decoration:line-through; padding:2px 4px;'>{chunk}</span>"
 
-            html_output += f"<div style='padding:5px; display:inline-block; border-radius:3px;'>{highlighted}</div>"
-
+        html_output += f"<div style='background:#2d2d2d; padding:12px; border-radius:5px; font-family:monospace; line-height:1.8; white-space:pre-wrap; max-height:600px; overflow-y:auto;'>{highlighted}</div>"
         html_output += "</div>"
 
     html_output += "</div>"
@@ -243,16 +279,16 @@ def extract_cell_text(roi: np.ndarray, methods: Dict) -> Dict[str, str]:
             text_list = methods['easy_ru'].readtext(roi, detail=0, paragraph=True)
             text = " ".join([t.strip() for t in text_list if t.strip()])
             if text:
-                results['EasyOCR-RU'] = text
+                results['EasyOCR'] = text
         except:
             pass
 
-    if methods['easy_ch']:
+    if methods['easy_ch'] and 'EasyOCR' not in results:
         try:
             text_list = methods['easy_ch'].readtext(roi, detail=0, paragraph=True)
             text = " ".join([t.strip() for t in text_list if t.strip()])
             if text:
-                results['EasyOCR-CH'] = text
+                results['EasyOCR'] = text
         except:
             pass
 
@@ -292,9 +328,7 @@ def build_table_from_cells(cells: List[Dict], img: np.ndarray, methods: Dict) ->
                     roi_processed = preprocess_image(roi, scale=2.0)
                     roi_rgb = cv2.cvtColor(roi_processed, cv2.COLOR_GRAY2RGB)
 
-                    # Получаем все результаты
                     all_results = extract_cell_text(roi_rgb, methods)
-                    # Берём самый длинный
                     if all_results:
                         text = max(all_results.values(), key=len)
 
@@ -332,14 +366,12 @@ if uploaded_file:
                 tmp.write(file_bytes)
                 img_path = tmp.name
 
-            # Результаты от каждого движка отдельно
-            engine_results = {
-                'PaddleOCR-EN': [],
-                'PaddleOCR-CH': [],
-                'Tesseract': [],
-                'EasyOCR-RU': [],
-                'EasyOCR-CH': []
-            }
+            # Временные результаты для объединения
+            paddle_en_lines = []
+            paddle_ch_lines = []
+            tesseract_lines = []
+            easy_ru_lines = []
+            easy_ch_lines = []
 
             tables_data = []
 
@@ -356,7 +388,7 @@ if uploaded_file:
                         for ln in res[0]:
                             text = ln[1][0].strip()
                             if text:
-                                engine_results['PaddleOCR-EN'].append(text)
+                                paddle_en_lines.append(text)
 
                 # ===== PaddleOCR CH =====
                 if ocr_ch:
@@ -365,7 +397,7 @@ if uploaded_file:
                         for ln in res[0]:
                             text = ln[1][0].strip()
                             if text:
-                                engine_results['PaddleOCR-CH'].append(text)
+                                paddle_ch_lines.append(text)
 
                 # ===== Tesseract =====
                 if TESSERACT_OK:
@@ -377,7 +409,7 @@ if uploaded_file:
                     for line in raw.splitlines():
                         line = line.strip()
                         if line:
-                            engine_results['Tesseract'].append(line)
+                            tesseract_lines.append(line)
 
                 # ===== EasyOCR RU =====
                 if easy_ru:
@@ -385,7 +417,7 @@ if uploaded_file:
                     for t in out:
                         t = t.strip()
                         if t:
-                            engine_results['EasyOCR-RU'].append(t)
+                            easy_ru_lines.append(t)
 
                 # ===== EasyOCR CH =====
                 if easy_ch:
@@ -393,7 +425,7 @@ if uploaded_file:
                     for t in out:
                         t = t.strip()
                         if t:
-                            engine_results['EasyOCR-CH'].append(t)
+                            easy_ch_lines.append(t)
 
                 # ===== Таблицы =====
                 if table_engine:
@@ -429,57 +461,84 @@ if uploaded_file:
                 except:
                     pass
 
+            # ===== ОБЪЕДИНЕНИЕ РЕЗУЛЬТАТОВ =====
+
+            # PaddleOCR = EN + CH
+            paddle_combined = merge_texts_smart([
+                "\n".join(paddle_en_lines),
+                "\n".join(paddle_ch_lines)
+            ])
+
+            # Tesseract
+            tesseract_combined = "\n".join(tesseract_lines)
+
+            # EasyOCR = RU + CH
+            easy_combined = merge_texts_smart([
+                "\n".join(easy_ru_lines),
+                "\n".join(easy_ch_lines)
+            ])
+
+            # Финальные 3 результата
+            final_results = {}
+            if paddle_combined:
+                final_results['PaddleOCR'] = paddle_combined
+            if tesseract_combined:
+                final_results['Tesseract'] = tesseract_combined
+            if easy_combined:
+                final_results['EasyOCR'] = easy_combined
+
             elapsed_time = time.time() - start_time
             st.success(f"✅ Обработка завершена за {elapsed_time:.2f} сек")
 
-            # ===== РЕЗУЛЬТАТЫ С ПОДСВЕТКОЙ =====
+            # ===== РЕЗУЛЬТАТЫ =====
             st.divider()
-            st.subheader("🔤 Сравнение результатов OCR")
+            st.subheader("🔤 Сравнение 3 движков OCR")
 
-            # Подготовка текстов для сравнения
-            comparison_texts = {}
-            for engine, lines in engine_results.items():
-                if lines:
-                    comparison_texts[engine] = "\n".join(lines)
-
-            if comparison_texts:
+            if final_results:
                 # Статистика совпадений
-                st.subheader("📊 Статистика совпадений")
+                if len(final_results) >= 2:
+                    st.subheader("📊 Статистика совпадений")
 
-                engines_list = list(comparison_texts.keys())
-                if len(engines_list) >= 2:
-                    cols = st.columns(len(engines_list) - 1)
-                    reference_text = comparison_texts[engines_list[0]]
+                    engines_list = list(final_results.keys())
+                    cols = st.columns(len(engines_list))
 
-                    for idx, engine in enumerate(engines_list[1:]):
-                        with cols[idx]:
-                            similarity = calculate_similarity(reference_text, comparison_texts[engine])
-                            st.metric(
-                                f"{engines_list[0]} ↔ {engine}",
-                                f"{similarity:.1f}%"
-                            )
+                    # Матрица сходства
+                    for i, engine1 in enumerate(engines_list):
+                        with cols[i]:
+                            for engine2 in engines_list:
+                                if engine1 != engine2:
+                                    similarity = calculate_similarity(
+                                        final_results[engine1],
+                                        final_results[engine2]
+                                    )
+                                    st.metric(
+                                        f"{engine1} ↔ {engine2}",
+                                        f"{similarity:.1f}%"
+                                    )
 
                 st.divider()
 
                 # Визуальное сравнение с подсветкой
                 st.subheader("🎨 Посимвольное сравнение (подсветка различий)")
+                st.caption("Первый движок — эталон. Цветом выделены различия в остальных.")
 
-                highlighted_html = align_and_highlight_differences(comparison_texts)
+                highlighted_html = align_and_highlight_differences(final_results)
                 st.markdown(highlighted_html, unsafe_allow_html=True)
 
                 st.divider()
 
-                # Кнопки скачивания для каждого движка
+                # Кнопки скачивания
                 st.subheader("📥 Скачать результаты")
-                cols = st.columns(len(comparison_texts))
+                cols = st.columns(len(final_results))
 
-                for idx, (engine, text) in enumerate(comparison_texts.items()):
+                for idx, (engine, text) in enumerate(final_results.items()):
                     with cols[idx]:
                         st.download_button(
                             f"💾 {engine}",
                             text,
-                            f"ocr_{engine.lower().replace('-', '_')}.txt",
-                            "text/plain"
+                            f"ocr_{engine.lower()}.txt",
+                            "text/plain",
+                            key=f"download_{engine}"
                         )
 
             else:
@@ -501,7 +560,8 @@ if uploaded_file:
                             f"📥 CSV таблица {i}",
                             csv,
                             f"table_{i}.csv",
-                            "text/csv"
+                            "text/csv",
+                            key=f"csv_{i}"
                         )
                     with col2:
                         excel_buffer = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
@@ -511,7 +571,8 @@ if uploaded_file:
                                 f"📥 Excel таблица {i}",
                                 f.read(),
                                 f"table_{i}.xlsx",
-                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key=f"excel_{i}"
                             )
                         try:
                             os.unlink(excel_buffer.name)
