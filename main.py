@@ -58,7 +58,12 @@ if EASYOCR_OK:
 @st.cache_resource
 def load_paddle():
     if not PADDLE_OK:
-        return None, None, None
+        return None, None, None, {}
+
+    load_timings = {}
+
+    # PaddleOCR EN/CH для текста
+    t1 = time.time()
     ocr_en = PaddleOCR(
         lang='en',
         use_angle_cls=True,
@@ -67,6 +72,9 @@ def load_paddle():
         det_db_box_thresh=0.3,
         rec_batch_num=6
     )
+    load_timings['PaddleOCR_en_load_s'] = time.time() - t1
+
+    t2 = time.time()
     ocr_ch = PaddleOCR(
         lang='ch',
         use_angle_cls=True,
@@ -75,6 +83,10 @@ def load_paddle():
         det_db_box_thresh=0.3,
         rec_batch_num=6
     )
+    load_timings['PaddleOCR_ch_load_s'] = time.time() - t2
+
+    # Движок для таблиц остаётся без изменений
+    t3 = time.time()
     table_engine = PPStructure(
         lang='en',
         layout=True,
@@ -85,21 +97,46 @@ def load_paddle():
         return_ocr_result_in_table=True,
         show_log=False
     )
-    return ocr_en, ocr_ch, table_engine
+    load_timings['PPStructure_table_load_s'] = time.time() - t3
+
+    return ocr_en, ocr_ch, table_engine, load_timings
 
 
 @st.cache_resource
 def load_easyocr_models():
     if not EASYOCR_OK:
-        return None, None
+        return None, None, {}
+    load_timings = {}
+    t0 = time.time()
     ru_reader = easyocr.Reader(['ru', 'en'], gpu=False, download_enabled=True)
+    load_timings['EasyOCR_ru_load_s'] = time.time() - t0
+    t1 = time.time()
     ch_reader = easyocr.Reader(['ch_sim', 'en'], gpu=False, download_enabled=True)
-    return ru_reader, ch_reader
+    load_timings['EasyOCR_ch_load_s'] = time.time() - t1
+    return ru_reader, ch_reader, load_timings
 
 
 with st.spinner("⏳ Загрузка моделей..."):
-    ocr_en, ocr_ch, table_engine = load_paddle() if PADDLE_OK else (None, None, None)
-    easy_ru, easy_ch = load_easyocr_models() if EASYOCR_OK else (None, None)
+    ocr_en, ocr_ch, table_engine, paddle_load_times = load_paddle() if PADDLE_OK else (None, None, None, {})
+    easy_ru, easy_ch, easy_load_times = load_easyocr_models() if EASYOCR_OK else (None, None, {})
+
+model_load_times = {}
+model_load_times.update(paddle_load_times or {})
+model_load_times.update(easy_load_times or {})
+
+# Показать время загрузки моделей сразу после инициализации
+if model_load_times:
+    st.caption("⏱️ Время загрузки моделей")
+    cols_load = st.columns(4)
+    with cols_load[0]:
+        st.metric("PaddleOCR EN (load)", f"{model_load_times.get('PaddleOCR_en_load_s', 0):.2f} с")
+    with cols_load[1]:
+        st.metric("PaddleOCR CH (load)", f"{model_load_times.get('PaddleOCR_ch_load_s', 0):.2f} с")
+    with cols_load[2]:
+        st.metric("EasyOCR RU (load)", f"{model_load_times.get('EasyOCR_ru_load_s', 0):.2f} с")
+    with cols_load[3]:
+        st.metric("EasyOCR CH (load)", f"{model_load_times.get('EasyOCR_ch_load_s', 0):.2f} с")
+    st.metric("PPStructure (tables) (load)", f"{model_load_times.get('PPStructure_table_load_s', 0):.2f} с")
 
 
 # ========= Утилиты =========
@@ -214,6 +251,75 @@ def align_and_highlight_differences(texts_dict: Dict[str, str]) -> str:
     html_output += "</div>"
 
     return html_output
+
+
+def consensus_highlight_vertical(texts_dict: Dict[str, str]) -> str:
+    """
+    Вертикальное отображение 3 движков.
+    Подсветка по консенсусу слов между тремя результатами:
+      - зелёный: слово встречается у всех 3
+      - жёлтый: слово встречается у 2
+      - красный: слово встречается у 1
+    """
+    if not texts_dict or len(texts_dict) == 0:
+        return "<div>Нет данных</div>"
+
+    # Цвета консенсуса
+    color_all = "#00c853"
+    color_two = "#ffd600"
+    color_one = "#ff5252"
+
+    # Токенизация по словам (кейсы игнорируем для консенсуса)
+    def tokenize_words(s: str) -> List[str]:
+        tokens = re.findall(r"\w+|\S", s, flags=re.UNICODE)
+        return tokens
+
+    # Наборы слов на движок (в нижнем регистре, только алфанумерика)
+    engine_tokens = {}
+    for engine, text in texts_dict.items():
+        tokens = tokenize_words(text)
+        normalized = set([t.lower() for t in tokens if re.search(r"\w", t, flags=re.UNICODE)])
+        engine_tokens[engine] = normalized
+
+    # Частота появления каждого слова по движкам
+    word_freq = {}
+    for tokens in engine_tokens.values():
+        for w in tokens:
+            word_freq[w] = word_freq.get(w, 0) + 1
+
+    # Рендер для каждого движка: исходный текст с подсветкой слов по консенсусу
+    def render_text(engine: str, text: str) -> str:
+        tokens = tokenize_words(text)
+        pieces = []
+        for t in tokens:
+            if re.search(r"\w", t, flags=re.UNICODE):
+                cnt = word_freq.get(t.lower(), 0)
+                if cnt >= 3:
+                    pieces.append(f"<span style='background:{color_all}; color:#000; padding:1px 3px; border-radius:3px;'>{t}</span>")
+                elif cnt == 2:
+                    pieces.append(f"<span style='background:{color_two}; color:#000; padding:1px 3px; border-radius:3px;'>{t}</span>")
+                else:
+                    pieces.append(f"<span style='background:{color_one}; color:#000; padding:1px 3px; border-radius:3px;'>{t}</span>")
+            else:
+                # пробелы/знаки препинания выводим как есть
+                if t == "\n":
+                    pieces.append("<br/>")
+                else:
+                    pieces.append(t)
+        return "".join(pieces)
+
+    # Контейнер (вертикальный стек блоков)
+    html = "<div style='display:block; background:#1a1a1a; padding:20px; border-radius:8px;'>"
+    for engine, text in texts_dict.items():
+        html += f"<div style='border:2px solid #444; border-radius:8px; padding:15px; background:#0d0d0d; margin-bottom:16px;'>"
+        html += f"<div style='text-align:left; margin-bottom:10px;'>"
+        html += f"<strong style='color:#ddd; font-size:16px;'>🔹 {engine}</strong>"
+        html += f"</div>"
+        html += f"<div style='background:#2d2d2d; padding:12px; border-radius:5px; font-family:monospace; line-height:1.8; white-space:pre-wrap; color:#ccc; max-height:600px; overflow-y:auto;'>"
+        html += render_text(engine, text)
+        html += "</div></div>"
+    html += "</div>"
+    return html
 
 
 def calculate_similarity(text1: str, text2: str) -> float:
@@ -377,61 +483,98 @@ if uploaded_file:
 
             tables_data = []
 
+            # Тайминги обработки
+            process_times = {}
+
             try:
                 img_cv = cv2.imread(img_path)
                 img_rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
 
-                st.image(img_rgb, caption="Загруженное изображение", use_container_width=True)
+                st.image(img_rgb, caption="Загруженное изображение", width='stretch')
 
                 # ===== PaddleOCR EN =====
                 if ocr_en:
-                    res = ocr_en.ocr(img_cv, cls=True)
-                    if res and res[0]:
-                        for ln in res[0]:
-                            text = ln[1][0].strip()
-                            if text:
-                                paddle_en_lines.append(text)
+                    t_p_en = time.time()
+                    try:
+                        res = ocr_en.ocr(img_cv, cls=True)
+                        if res and res[0]:
+                            for ln in res[0]:
+                                text = ln[1][0].strip()
+                                if text:
+                                    paddle_en_lines.append(text)
+                    finally:
+                        process_times['PaddleOCR_en_process_s'] = time.time() - t_p_en
 
                 # ===== PaddleOCR CH =====
                 if ocr_ch:
-                    res = ocr_ch.ocr(img_cv, cls=True)
-                    if res and res[0]:
-                        for ln in res[0]:
-                            text = ln[1][0].strip()
-                            if text:
-                                paddle_ch_lines.append(text)
+                    t_p_ch = time.time()
+                    try:
+                        res = ocr_ch.ocr(img_cv, cls=True)
+                        if res and res[0]:
+                            for ln in res[0]:
+                                text = ln[1][0].strip()
+                                if text:
+                                    paddle_ch_lines.append(text)
+                    finally:
+                        process_times['PaddleOCR_ch_process_s'] = time.time() - t_p_ch
 
                 # ===== Tesseract =====
                 if TESSERACT_OK:
-                    raw = pytesseract.image_to_string(
-                        img_rgb,
-                        lang="eng+rus+chi_sim",
-                        config="--oem 1 --psm 6"
-                    )
-                    for line in raw.splitlines():
-                        line = line.strip()
-                        if line:
-                            tesseract_lines.append(line)
+                    t_tes = time.time()
+                    try:
+                        raw = pytesseract.image_to_string(
+                            img_rgb,
+                            lang="eng+rus+chi_sim",
+                            config="--oem 1 --psm 6"
+                        )
+                        for line in raw.splitlines():
+                            line = line.strip()
+                            if line:
+                                tesseract_lines.append(line)
+                    finally:
+                        process_times['Tesseract_process_s'] = time.time() - t_tes
 
                 # ===== EasyOCR RU =====
                 if easy_ru:
-                    out = easy_ru.readtext(img_rgb, detail=0, paragraph=False)
-                    for t in out:
-                        t = t.strip()
-                        if t:
-                            easy_ru_lines.append(t)
+                    t_easy = time.time()
+                    try:
+                        out = easy_ru.readtext(img_rgb, detail=0, paragraph=False)
+                        for t in out:
+                            t = t.strip()
+                            if t:
+                                easy_ru_lines.append(t)
+                    finally:
+                        process_times['EasyOCR_ru_process_s'] = process_times.get('EasyOCR_ru_process_s', 0.0) + (time.time() - t_easy)
 
                 # ===== EasyOCR CH =====
                 if easy_ch:
-                    out = easy_ch.readtext(img_rgb, detail=0, paragraph=False)
-                    for t in out:
-                        t = t.strip()
-                        if t:
-                            easy_ch_lines.append(t)
+                    t_easy2 = time.time()
+                    try:
+                        out = easy_ch.readtext(img_rgb, detail=0, paragraph=False)
+                        for t in out:
+                            t = t.strip()
+                            if t:
+                                easy_ch_lines.append(t)
+                    finally:
+                        process_times['EasyOCR_ch_process_s'] = time.time() - t_easy2
 
                 # ===== Таблицы =====
                 if table_engine:
-                    table_result = table_engine(img_path)
+                    # Пытаемся сначала подать изображение как ndarray (чаще надёжнее на CPU),
+                    # при ошибке пробуем путь, при повторной ошибке — пропускаем таблицы.
+                    table_result = []
+                    table_error = None
+                    try:
+                        table_result = table_engine(img_cv)
+                    except Exception as e_nd:
+                        table_error = e_nd
+                        try:
+                            table_result = table_engine(img_path)
+                            table_error = None
+                        except Exception as e_path:
+                            table_error = e_path
+                            st.warning("⚠️ Обнаружена проблема при распознавании таблиц, пропускаю блок таблиц.")
+                            table_result = []
                     methods = {
                         'tesseract': TESSERACT_OK,
                         'easy_ru': easy_ru,
@@ -481,27 +624,54 @@ if uploaded_file:
             ])
 
             # Финальные 3 результата
-            final_results = {}
-            if paddle_combined:
-                final_results['PaddleOCR'] = paddle_combined
-            if tesseract_combined:
-                final_results['Tesseract'] = tesseract_combined
-            if easy_combined:
-                final_results['EasyOCR'] = easy_combined
+            # Всегда показываем 3 модели, даже если какая-то дала пустой результат
+            final_results = {
+                'PaddleOCR': paddle_combined or "",
+                'Tesseract': tesseract_combined or "",
+                'EasyOCR': easy_combined or ""
+            }
 
             elapsed_time = time.time() - start_time
             st.success(f"✅ Обработка завершена за {elapsed_time:.2f} сек")
 
             # ===== РЕЗУЛЬТАТЫ =====
             st.divider()
-            st.subheader("🔤 Сравнение 3 движков OCR")
+            st.subheader("🔤 Сравнение 3 движков OCR (вертикально, подсветка консенсуса слов)")
+
+            # Показ таймингов загрузки и обработки по моделям
+            with st.expander("⏱️ Тайминги загрузки/обработки по моделям"):
+                # Загрузка
+                cols_t = st.columns(3)
+                with cols_t[0]:
+                    st.metric("PaddleOCR EN (load)", f"{model_load_times.get('PaddleOCR_en_load_s', 0):.2f} с")
+                with cols_t[1]:
+                    st.metric("PaddleOCR CH (load)", f"{model_load_times.get('PaddleOCR_ch_load_s', 0):.2f} с")
+                with cols_t[2]:
+                    st.metric("PPStructure (tables) (load)", f"{model_load_times.get('PPStructure_table_load_s', 0):.2f} с")
+
+                cols_t2 = st.columns(2)
+                with cols_t2[0]:
+                    st.metric("EasyOCR RU (load)", f"{model_load_times.get('EasyOCR_ru_load_s', 0):.2f} с")
+                with cols_t2[1]:
+                    st.metric("EasyOCR CH (load)", f"{model_load_times.get('EasyOCR_ch_load_s', 0):.2f} с")
+
+                cols_p = st.columns(3)
+                with cols_p[0]:
+                    paddle_proc = process_times.get('PaddleOCR_en_process_s', 0.0) + process_times.get('PaddleOCR_ch_process_s', 0.0)
+                    st.metric("PaddleOCR (process)", f"{paddle_proc:.2f} с")
+                with cols_p[1]:
+                    st.metric("Tesseract (process)", f"{process_times.get('Tesseract_process_s', 0):.2f} с")
+                with cols_p[2]:
+                    # суммарно RU+CH
+                    easy_proc = process_times.get('EasyOCR_ru_process_s', 0.0) + process_times.get('EasyOCR_ch_process_s', 0.0)
+                    st.metric("EasyOCR (process)", f"{easy_proc:.2f} с")
 
             if final_results:
 
-                # Визуальное сравнение с подсветкой (главный результат)
-                st.caption("Первый движок — эталон. Цветом выделены различия в остальных.")
+                # Вертикальная визуализация с консенсус-подсветкой
+                st.caption("Подсветка слов: зелёный — у всех 3, жёлтый — у двух, красный — только у одного.")
 
-                highlighted_html = align_and_highlight_differences(final_results)
+                highlighted_html = consensus_highlight_vertical(final_results)
                 st.markdown(highlighted_html, unsafe_allow_html=True)
 
                 st.divider()
