@@ -13,6 +13,8 @@ import pytesseract
 from typing import List, Tuple, Dict
 from difflib import SequenceMatcher
 import time
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # ========= EasyOCR =========
 try:
@@ -495,35 +497,181 @@ if uploaded_file:
             st.subheader("🔤 Сравнение 3 движков OCR")
 
             if final_results:
-                # Статистика совпадений
-                if len(final_results) >= 2:
-                    st.subheader("📊 Статистика совпадений")
 
-                    engines_list = list(final_results.keys())
-                    cols = st.columns(len(engines_list))
-
-                    # Матрица сходства
-                    for i, engine1 in enumerate(engines_list):
-                        with cols[i]:
-                            for engine2 in engines_list:
-                                if engine1 != engine2:
-                                    similarity = calculate_similarity(
-                                        final_results[engine1],
-                                        final_results[engine2]
-                                    )
-                                    st.metric(
-                                        f"{engine1} ↔ {engine2}",
-                                        f"{similarity:.1f}%"
-                                    )
-
-                st.divider()
-
-                # Визуальное сравнение с подсветкой
-                st.subheader("🎨 Посимвольное сравнение (подсветка различий)")
+                # Визуальное сравнение с подсветкой (главный результат)
                 st.caption("Первый движок — эталон. Цветом выделены различия в остальных.")
 
                 highlighted_html = align_and_highlight_differences(final_results)
                 st.markdown(highlighted_html, unsafe_allow_html=True)
+
+                st.divider()
+
+                # Кнопка для статистики (скрываемое меню)
+                with st.expander("📊 Показать статистику совпадений и графики точности"):
+                    if len(final_results) >= 2:
+                        engines_list = list(final_results.keys())
+
+                        # Цвета для движков
+                        engine_colors = {
+                            'PaddleOCR': '#4A90E2',
+                            'Tesseract': '#50C878',
+                            'EasyOCR': '#FF6B6B'
+                        }
+
+                        # Вычисление всех парных сходств (полная матрица 6 сравнений)
+                        st.subheader("📈 Матрица совпадений (все пары)")
+
+                        all_comparisons = []
+                        for engine1 in engines_list:
+                            for engine2 in engines_list:
+                                if engine1 != engine2:
+                                    sim = calculate_similarity(
+                                        final_results[engine1],
+                                        final_results[engine2]
+                                    )
+                                    all_comparisons.append({
+                                        'from': engine1,
+                                        'to': engine2,
+                                        'similarity': sim
+                                    })
+
+                        # Отображение в 3 колонках (по 2 метрики в каждой)
+                        cols = st.columns(3)
+
+                        for idx, comp in enumerate(all_comparisons):
+                            with cols[idx % 3]:
+                                pair_name = f"{comp['from']} → {comp['to']}"
+                                st.metric(pair_name, f"{comp['similarity']:.1f}%")
+
+                        st.divider()
+
+                        # График точности для каждого сравнения
+                        st.subheader("📊 Графики точности (6 сравнений)")
+
+                        # Настройка стиля seaborn
+                        sns.set_style("darkgrid")
+                        plt.rcParams['figure.facecolor'] = '#0E1117'
+                        plt.rcParams['axes.facecolor'] = '#262730'
+                        plt.rcParams['text.color'] = 'white'
+                        plt.rcParams['axes.labelcolor'] = 'white'
+                        plt.rcParams['xtick.color'] = 'white'
+                        plt.rcParams['ytick.color'] = 'white'
+                        plt.rcParams['grid.color'] = '#404040'
+
+                        # Создаём графики для каждого сравнения
+                        for idx, comp in enumerate(all_comparisons):
+                            st.write(f"**{idx + 1}. {comp['from']} → {comp['to']}**")
+
+                            sim = comp['similarity']
+                            diff = 100 - sim
+
+                            # Создаём фигуру с 2 графиками (горизонтальный бар + пай-чарт)
+                            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 3))
+
+                            # График 1: Горизонтальный bar chart
+                            categories = ['Совпадение', 'Различие']
+                            values = [sim, diff]
+                            colors_bar = ['#50C878', '#FF6B6B']
+
+                            bars = ax1.barh(categories, values, color=colors_bar, edgecolor='white', linewidth=1.5)
+                            ax1.set_xlim(0, 100)
+                            ax1.set_xlabel('Процент (%)', fontsize=11, color='white')
+                            ax1.set_title(f'{comp["from"]} → {comp["to"]}', fontsize=12, color='white', pad=10)
+
+                            # Добавляем значения на бары
+                            for bar, value in zip(bars, values):
+                                width = bar.get_width()
+                                ax1.text(width + 2, bar.get_y() + bar.get_height() / 2,
+                                         f'{value:.1f}%',
+                                         ha='left', va='center', fontsize=10, color='white', fontweight='bold')
+
+                            ax1.grid(axis='x', alpha=0.3)
+
+                            # График 2: Pie chart
+                            colors_pie = ['#50C878', '#FF6B6B']
+                            explode = (0.05, 0.05)
+
+                            wedges, texts, autotexts = ax2.pie(
+                                values,
+                                labels=categories,
+                                colors=colors_pie,
+                                autopct='%1.1f%%',
+                                startangle=90,
+                                explode=explode,
+                                textprops={'color': 'white', 'fontsize': 10, 'fontweight': 'bold'},
+                                wedgeprops={'edgecolor': 'white', 'linewidth': 1.5}
+                            )
+
+                            ax2.set_title('Распределение', fontsize=12, color='white', pad=10)
+
+                            # Индикатор качества
+                            if sim >= 80:
+                                quality = "✅ Отлично"
+                                quality_color = '#50C878'
+                            elif sim >= 60:
+                                quality = "ℹ️ Хорошо"
+                                quality_color = '#4A90E2'
+                            elif sim >= 40:
+                                quality = "⚠️ Средне"
+                                quality_color = '#FFA07A'
+                            else:
+                                quality = "❌ Низко"
+                                quality_color = '#FF6B6B'
+
+                            fig.text(0.5, -0.05, quality, ha='center', fontsize=13,
+                                     color=quality_color, fontweight='bold')
+
+                            plt.tight_layout()
+                            st.pyplot(fig)
+                            plt.close()
+
+                            st.markdown("---")
+
+                        # Тепловая карта (Heatmap) - общая матрица сходства
+                        st.subheader("🔥 Тепловая карта сходства")
+
+                        # Создаём матрицу сходства
+                        matrix_size = len(engines_list)
+                        similarity_matrix = np.zeros((matrix_size, matrix_size))
+
+                        for i, engine1 in enumerate(engines_list):
+                            for j, engine2 in enumerate(engines_list):
+                                if i == j:
+                                    similarity_matrix[i][j] = 100
+                                else:
+                                    sim = calculate_similarity(
+                                        final_results[engine1],
+                                        final_results[engine2]
+                                    )
+                                    similarity_matrix[i][j] = sim
+
+                        # Создаём heatmap
+                        fig_heat, ax_heat = plt.subplots(figsize=(8, 6))
+
+                        sns.heatmap(
+                            similarity_matrix,
+                            annot=True,
+                            fmt='.1f',
+                            cmap='RdYlGn',
+                            xticklabels=engines_list,
+                            yticklabels=engines_list,
+                            cbar_kws={'label': 'Совпадение (%)'},
+                            linewidths=2,
+                            linecolor='white',
+                            vmin=0,
+                            vmax=100,
+                            ax=ax_heat,
+                            annot_kws={'fontsize': 12, 'fontweight': 'bold'}
+                        )
+
+                        ax_heat.set_title('Матрица сходства между OCR движками',
+                                          fontsize=14, color='white', pad=15, fontweight='bold')
+                        ax_heat.set_xlabel('Целевой движок', fontsize=11, color='white')
+                        ax_heat.set_ylabel('Исходный движок', fontsize=11, color='white')
+
+                        plt.tight_layout()
+                        st.pyplot(fig_heat)
+                        plt.close()
 
                 st.divider()
 
